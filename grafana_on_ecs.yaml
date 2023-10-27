@@ -1,0 +1,121 @@
+Description: >
+  This template deploys Grafana to an AWS Fargate Cluster on user-defined VPC and Subnets. Container definition is pulled from the public Docker image for Grafana (https://hub.docker.com/r/grafana/grafana/). An ECS Service ensures Grafana continues to run on the created Cluster. Logging is captured within CloudWatch.
+
+Parameters:
+  VpcId:
+    Description: The VPC to which this cluster should be deployed
+    Type: AWS::EC2::VPC::Id
+
+  Subnets:
+    Description: Choose at least two subnets in this VPC
+    Type: List<AWS::EC2::Subnet::Id>
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/grafana-fargate-1
+  
+  SecurityGroupForGrafana:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow (TCP port 3000) in
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic by default
+          IpProtocol: "-1"
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          Description: Allow SSH Access
+          FromPort: 3000
+          IpProtocol: tcp
+          ToPort: 3000
+      Tags:
+        - Key: Name
+          Value: "SecurityGroupForGrafana"
+      VpcId:
+        Ref: VpcId
+  
+  PolicyForECSTaskExecutionRole:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+              - ecr:GetAuthorizationToken
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Effect: Allow
+            Resource: "*"
+            Sid: "AllowRunningECSTask"
+          - Action:
+              - sts:AssumeRole
+              - iotsitewise:*
+            Effect: Allow
+            Resource: "*"
+            Sid: "AllowReadingDataFromSitewise"
+        Version: "2012-10-17"
+      PolicyName: PolicyForECSTaskExecutionRoleForSiemensIndustryEdgeDemo
+      Roles:
+        - Ref: ECSTaskExecutionRole
+  
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ECSTaskExecutionRoleForSiemensIndustryEdgeDemo
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+        Version: "2012-10-17"
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: grafana-fargate-cluster-1
+
+  TaskDefinition: 
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: grafana-fargate-demo-1
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !Sub arn:aws-cn:iam::${AWS::AccountId}:role/ECSTaskExecutionRoleForSiemensIndustryEdgeDemo
+      Memory: 512
+      Cpu: 256
+      ContainerDefinitions:
+        -
+          Name: grafana-container-1
+          Image: grafana/grafana
+          Memory: 512
+          Cpu: 256
+          PortMappings:
+            - ContainerPort: 3000
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+                awslogs-group: "/ecs/grafana-fargate-1"
+                awslogs-region: !Ref AWS::Region
+                awslogs-stream-prefix: "dashboard"
+
+  ServiceDefinition:
+    Type: AWS::ECS::Service
+    Properties:
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      Cluster: !Ref ECSCluster
+      ServiceName: grafana-dashboard-service-1
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups: #Must before Subnets
+            - !Ref SecurityGroupForGrafana
+          Subnets: !Ref Subnets
